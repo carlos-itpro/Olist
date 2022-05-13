@@ -1,0 +1,226 @@
+---
+title: "Projeto de Estatística Computacional em R - MBA BI & Analytics CIn/UFPE"
+author: "Carlos Augusto Gomes da Silva"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+## Perguntas:
+* Quais dias possuem maior número de vendas?
+* Qual o comportamento no final de semana?
+* Dentre essas vendas qual a taxa de pedidos entregues? e dos cancelados?
+* De forma regionalizada no Nordeste há semelhanças com o cenário nacional?
+
+## Carregando os pacotes necessários
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE}
+
+library(tidyverse)
+library(scales)
+library(plotly)
+library(skimr)
+library(lubridate)
+library(reshape2)
+library(janitor)
+library(knitr)
+library(kableExtra)
+
+```
+
+## Carregando os dados
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE}
+
+customers <- read.csv(url("https://github.com/carlos-itpro/Olist/raw/master/Olist/data/olist/olist_customers_dataset.csv"), sep=",")
+payments <- read.csv(url("https://github.com/carlos-itpro/Olist/raw/master/Olist/data/olist/olist_order_payments_dataset.csv"), sep=",")
+orders <- read.csv(url("https://github.com/carlos-itpro/Olist/raw/master/Olist/data/olist/olist_orders_dataset.csv"), sep=",")
+products <- read.csv(url("https://github.com/carlos-itpro/Olist/raw/master/Olist/data/olist/olist_products_dataset.csv"), sep=",")
+
+```
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE}
+
+variables <- tibble(order = paste(names(orders), collapse = ", "), 
+       customers = paste(names(customers), collapse = ", "),  
+       payments = paste(names(payments), collapse = ", ")) %>% 
+  pivot_longer(everything(), names_to = "Dataset", values_to = "Variáveis")
+
+# Formatação para o Rmarkdown
+variables %>% 
+  kbl(align='ll') %>% 
+  kable_classic_2() %>% 
+  kable_paper() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>% 
+  kable_styling(full_width = FALSE, font_size = 10) 
+
+```
+
+## Analisando o perfil de compra por horário durante a semana na região nordeste e o desempenho logístico.
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE}
+# filtrandos as colunas de interesse.
+orders <- orders %>%
+    select(order_id, customer_id, order_status, order_purchase_timestamp,
+           order_delivered_customer_date, order_estimated_delivery_date)
+```
+## Qual é a taxa de sucesso nas entregas no país? e qual a de pedidos cancelados?
+
+```{r}
+orders_delivered <- orders %>%
+    filter(!is.na(order_delivered_customer_date))
+
+tabyl(orders_delivered, order_status) %>%
+    adorn_pct_formatting(digits =2,affix_sign=TRUE) %>%
+    adorn_totals()
+```
+
+> * Vemos que há alta taxa de pedidos entregues e baixo percentual de pedidos cancelados.
+
+## Como ficam essas taxas para a região Nordeste?
+
+```{r}
+estados_ne <- c("PE","PB","CE","AL","CE","PI","MA","RN","SE","BA")
+orders_ne <- merge(orders,customers, by = "customer_id") %>%
+    filter(customer_state %in% estados_ne)
+
+tabyl(orders_ne, order_status) %>%
+    adorn_pct_formatting(digits =2,affix_sign=TRUE) %>%
+    adorn_totals()
+```
+
+> * No Nordeste em comparação ao cenário geral temos uma menor taxa de pedidos cancelados, o que pode sugerir uma maior assertividade dos clientes quanto a necessidade dos itens?
+> * Em contrapartida há uma taxa menor de pedidos entregues no recorte regional e maior taxa de pedidos em transporte. Indicativo de prazo médio de entrega acima da média nacional.  
+
+## Em quais dias e horários há mais ou menos vendas no Nordeste?
+
+```{r}
+# preparando os dados.
+orders_ne <- merge(orders_ne, payments, by = "order_id")
+orders_ne <- orders_ne %>%
+    mutate(order_purchase_date = as.Date(order_purchase_timestamp, "%Y-%m-%d"))
+orders_ne$order_purchase_year <- format(orders_ne$order_purchase_date, format="%Y")
+```
+
+```{r}
+# categorizando as compras em turnos e região.
+orders_ne <- orders_ne %>%
+    mutate(orders_weekday = weekdays(as.Date(order_purchase_timestamp), abbreviate = FALSE)) %>%
+    mutate(since_midnight = hour(order_purchase_timestamp) * 60 + minute(order_purchase_timestamp)) %>%
+    mutate(orders_time_group = case_when(since_midnight >= 1080 ~ 'Noite (18:00 - 24:00)',
+                                     since_midnight >= 720 ~ 'Tarde (12:00 - 18:00)',
+                                     since_midnight >= 120 ~ 'Manhã (6:00 - 12:00)',
+                                     TRUE ~ 'Madrugada (0:00 - 6:00)')) %>%
+    mutate(regiao = case_when(str_detect(customer_state, "PE|PB|CE|AL|CE|PI|MA|RN|SE|BA") ~ "Nordeste",
+                              str_detect(customer_state, "AC|AP|PA|AM|RR|RO|TO") ~ "Norte",
+                              str_detect(customer_state, "SP|RJ|MG|ES") ~ "Sudeste",
+                              str_detect(customer_state, "PR|SC|RS") ~ "Sul",
+                              str_detect(customer_state, "MT|MS|DF|GO") ~ "Centro-Oeste"))
+
+# filtrandos as colunas de interesse.
+orders_ne <- orders_ne %>%
+    select(order_id, customer_id, customer_unique_id, customer_state, customer_city, 
+           order_purchase_timestamp, order_delivered_customer_date, orders_weekday, order_purchase_year,orders_time_group, regiao)
+```
+
+
+```{r}
+# categorizando por dia da semana.
+orders_ne <- orders_ne %>%
+group_by(orders_weekday,orders_time_group) %>%
+count(orders_time_group)
+
+orders_ne <- orders_ne %>%
+mutate(orders_weekday = case_when(str_detect(orders_weekday, "Monday") ~ "Segunda",
+                              str_detect(orders_weekday, "Tuesday") ~ "Terça",
+                              str_detect(orders_weekday, "Wednesday") ~ "Quarta",
+                              str_detect(orders_weekday, "Thursday") ~ "Quinta",
+                              str_detect(orders_weekday, "Friday") ~ "Sexta",
+                              str_detect(orders_weekday, "Saturday") ~ "Sábado",
+                              str_detect(orders_weekday, "Sunday") ~ "Domingo"))
+
+# ordenando os dados para melhor visualização
+orders_ne <- orders_ne %>%
+  mutate(orders_weekday = factor(orders_weekday, levels=c("Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"))) %>%
+  arrange(orders_weekday)
+
+orders_ne <- orders_ne %>%
+  mutate(orders_time_group = factor(orders_time_group, levels=c("Madrugada (0:00 - 6:00)", "Manhã (6:00 - 12:00)", "Tarde (12:00 - 18:00)", "Noite (18:00 - 24:00)"))) %>%
+  arrange(orders_weekday)
+```
+
+```{r}
+ggplot(orders_ne, aes(orders_weekday, orders_time_group)) +
+  geom_raster(aes(fill=n)) +
+  scale_fill_viridis_c(direction = -1, guide = "colourbar") +
+  labs(x="Dias da Semana",
+       y="Turnos",
+       fill="Qtde. Vendas",
+       title = "Vendas para a região Nordeste") +
+  theme(plot.title = element_text(hjust = 0.5),
+        aspect.ratio = 0.5)
+```
+
+> * Vemos que há maior número de vendas entre os dias úteis em comparação aos finais de semana, além de uma preferência por realizar pedidos após o meio dia, especialmente durante a tarde.
+
+## Qual foi o padrão de vendas no país?
+
+```{r, echo=FALSE, eval=TRUE, message=FALSE}
+orders <- merge(orders,customers, by = "customer_id")
+orders <- merge(orders,payments, by = "order_id")
+
+orders <- orders %>%
+    mutate(order_purchase_date = as.Date(order_purchase_timestamp, "%Y-%m-%d"))
+orders$order_purchase_year <- format(orders$order_purchase_date, format="%Y")
+
+orders <- orders %>%
+    mutate(orders_weekday = weekdays(as.Date(order_purchase_timestamp), abbreviate = FALSE)) %>%
+    mutate(since_midnight = hour(order_purchase_timestamp) * 60 + minute(order_purchase_timestamp)) %>%
+    mutate(orders_time_group = case_when(since_midnight >= 1080 ~ 'Noite (18:00 - 24:00)',
+                                     since_midnight >= 720 ~ 'Tarde (12:00 - 18:00)',
+                                     since_midnight >= 120 ~ 'Manhã (6:00 - 12:00)',
+                                     TRUE ~ 'Madrugada (0:00 - 6:00)')) %>%
+    mutate(regiao = case_when(str_detect(customer_state, "PE|PB|CE|AL|CE|PI|MA|RN|SE|BA") ~ "Nordeste",
+                              str_detect(customer_state, "AC|AP|PA|AM|RR|RO|TO") ~ "Norte",
+                              str_detect(customer_state, "SP|RJ|MG|ES") ~ "Sudeste",
+                              str_detect(customer_state, "PR|SC|RS") ~ "Sul",
+                              str_detect(customer_state, "MT|MS|DF|GO") ~ "Centro-Oeste"))
+orders <- orders %>%
+    select(order_id, customer_id, customer_unique_id, customer_state, customer_city, 
+           order_purchase_timestamp, order_delivered_customer_date, orders_weekday, order_purchase_year,orders_time_group, regiao)
+
+orders <- orders %>%
+group_by(orders_weekday,orders_time_group) %>%
+count(orders_time_group)
+
+orders <- orders %>%
+mutate(orders_weekday = case_when(str_detect(orders_weekday, "Monday") ~ "Segunda",
+                              str_detect(orders_weekday, "Tuesday") ~ "Terça",
+                              str_detect(orders_weekday, "Wednesday") ~ "Quarta",
+                              str_detect(orders_weekday, "Thursday") ~ "Quinta",
+                              str_detect(orders_weekday, "Friday") ~ "Sexta",
+                              str_detect(orders_weekday, "Saturday") ~ "Sábado",
+                              str_detect(orders_weekday, "Sunday") ~ "Domingo"))
+
+orders <- orders %>%
+  mutate(orders_weekday = factor(orders_weekday, levels=c("Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"))) %>%
+  arrange(orders_weekday)
+
+orders <- orders %>%
+  mutate(orders_time_group = factor(orders_time_group, levels=c("Madrugada (0:00 - 6:00)", "Manhã (6:00 - 12:00)", "Tarde (12:00 - 18:00)", "Noite (18:00 - 24:00)"))) %>%
+  arrange(orders_weekday)
+
+ggplot(orders, aes(orders_weekday, orders_time_group)) +
+  geom_raster(aes(fill=n)) +
+  scale_fill_viridis_c(direction = -1, guide = "colourbar") +
+  labs(x="Dias da Semana",
+       y="Turnos",
+       fill="Qtde. Vendas",
+       title = "Vendas para todo país") +
+  theme(plot.title = element_text(hjust = 0.5),
+        aspect.ratio = 0.5)
+```
+
+> * Notamos aqui o mesmo comportamento do recorte regional, concentração dos pedidos de segunda a sexta no período da tarde.
